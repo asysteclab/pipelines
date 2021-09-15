@@ -1,0 +1,185 @@
+name: Cloud Machine - Linux
+description: Deploy a Linux instance to the cloud
+version: 3
+formatVersion: 1
+################################ Inputs ################################
+inputs:
+  owner_firstname:
+    type: string
+    description: First name of user for whom we are requesting instance
+    title: Instance Owner - First Name
+    # a default string is required here for our substring code below to work.
+    default: ' '
+  owner_surname:
+    type: string
+    description: Surname of user for whom we are requesting instance
+    title: Instance Owner - Surname
+  owner_username:
+    type: string
+    description: 'A valid, existing, domain username to be allowed login access, such as g025926 or coonec1.'
+    title: Instance Owner
+    default: ' '
+  hostname:
+    type: string
+    description: Create an 8 character hostname for the deployed instance. Must begin with an alpha character followed by 7 alpha numeric characters. You can also use a dash.
+    title: Server Hostname
+    minLength: 8
+    maxLength: 8
+    # Valid DNS hostname characters only
+    pattern: '^[a-zA-Z][a-zA-Z0-9-]+$'
+  # Selector for which Cloud Account to deploy to, as new accounts are added to vRA, add them here
+  account:
+    type: string
+    oneOf:
+      - title: AWS Non Prod Apps Shared 01
+        const: AWS Non Prod Apps Shared 01
+      - title: AWS Prod Apps Shared 01
+        const: AWS Prod Apps Shared 01
+      - title: AWS Prod Org IT Shared Services
+        const: AWS Prod Org IT Shared Services
+    description: Cloud account to deploy to
+    title: Target Account
+  # used to set native cloud tag on deployment
+  environment:
+    type: string
+    description: Environment for instance
+    title: Environment
+    oneOf:
+      - title: Non-production
+        const: nonprod
+      - title: Production
+        const: prod
+    default: nonprod
+  region:
+    type: string
+    enum:
+      - us-east-1
+      - us-west-2
+      - ap-southeast-1
+      - sa-east-1
+      - ap-northeast-1
+      - eu-west-1
+      - eu-central-1
+    description: Region to deploy to
+    title: Region
+  # only use AZ a, b & c  
+  az:
+    type: string
+    enum:
+      - a
+      - b
+      - c
+    description: Availability Zone to deploy to
+    title: AZ
+  # Flavor mappings  
+  instance-size:
+    type: string
+    enum:
+      - nano
+      - micro
+      - small
+      - medium
+      - large
+      - xlarge
+      - 2xlarge
+      - 4xlarge
+      - 8xlarge
+      - 12xlarge
+      - 16xlarge
+      - 24xlarge
+    description: Size of Instance
+    title: Instance Size
+  # Image mappings
+  os-type:
+    type: string
+    enum:
+      - RHEL 7
+      - RHEL 8
+    description: OS Type to deploy
+    title: OS Type
+  cost-center:
+    type: string
+    description: Cost center for deployment
+    title: Cost Center
+  application:
+    type: string
+    description: Deployment Application
+    title: Application
+  # Selector to backup VM
+  backup:
+    type: boolean
+    default: false
+    description: Enable backup for instance
+    title: Backup
+  # Type of backup required, this is hidden in service broker custom form unless backup above is checked
+  backupprotection:
+    type: string
+    default: default
+    enum:
+      - default
+      - replicate
+      - immutable
+    description: Type of backup protection to configure for instance
+    title: Backup Protection
+################################ Resources ################################
+resources:
+  Cloud_Network_1:
+    type: Cloud.Network
+    properties:
+      networkType: existing
+      constraints:
+        - tag: 'Usage:private:hard'
+  Cloud_Machine_1:
+    type: Cloud.Machine
+    properties:
+      #Used to set instance name via Custom Naming in the Project
+      os: '${input.os-type == "Windows Server 2016" ? "w" : input.os-type == "Windows Server 2019" ? "w" : "l"}'
+      env: '${input.environment == "nonprod" ? "n" : "p"}'
+      hostname: '${to_lower(input.hostname)}'
+      username: '${to_lower(input.owner_username)}'
+      #---
+      image: '${input.os-type}'
+      region: '${input.region}'
+      zone: '${input.region+input.az}'
+      flavor: '${input.instance-size}'
+      tags:
+        - key: owner
+          value: '${to_lower(substring(input.owner_firstname,0,1)+to_lower(input.owner_surname))}'
+        - key: environment
+          value: '${input.environment}'
+        - key: costcenter
+          value: '${input.cost-center}'
+        - key: application
+          value: '${input.application}'
+        - key: backupcsm
+          value: '${input.backup}'
+        - key: backupcsmprotection
+          value: '${input.backupprotection}'
+      # These constraints determine the machine placement
+      constraints:
+        - tag: '${input.account}'
+        - tag: '${input.region}'
+      networks:
+        - network: '${resource.Cloud_Network_1.id}'
+      #Uses cloudinit to configure machine
+      cloudConfig: |
+        #cloud-config
+        output: {all: '| tee -a /var/log/cloud-init-cloud-assembly.log'}
+  #Terraform config which creates security group for instance
+  Cloud_Terraform_Configuration_1:
+    type: Cloud.Terraform.Configuration
+    dependsOn:
+      - Cloud_Machine_1
+    properties:
+      variables:
+        awsVpcId: '${resource.Cloud_Machine_1.awsVpcId}'
+        awsInstanceId: '${resource.Cloud_Machine_1.providerId}'
+        awsSgName: '${"vRA-"+resource.Cloud_Machine_1.resourceName+"-"+env.deploymentId}'
+      providers:
+        - name: aws
+          cloudZone: '${input.account+"/"+input.region}'
+      terraformVersion: 0.12.29
+      configurationSource:
+        repositoryId: b667ac2b-a5be-4bc7-b528-91ba711b7349
+        commitId: 5271b4c2fca796028a378fd2812f96981c85bf42
+        sourceDirectory: create-ondemand-sg-ec2
